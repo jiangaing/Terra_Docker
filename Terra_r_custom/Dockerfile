@@ -1,25 +1,48 @@
-FROM us.gcr.io/broad-dsp-gcr-public/terra-jupyter-r:2.2.1
+FROM ghcr.io/bioconductor/ml-verse:3.17 as build
 
-USER root
+RUN apt-get update && apt-get install -yq --no-install-recommends \
+    gnupg \
+    lsb-release \
+ && echo "deb http://packages.cloud.google.com/apt cloud-sdk main" > /etc/apt/sources.list.d/google-cloud-sdk.list \
+ && curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add - \
+ && apt-get update \
+ && apt-get install -yq --no-install-recommends \
+    google-cloud-sdk bcftools bedtools samtools tabix wget curl bzip2 zstd\
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
 
-################# custom tools #################
-COPY mamba-requirements.yaml /etc/terra-docker/
-RUN conda install -c conda-forge mamba
-RUN mamba env update -f /etc/terra-docker/mamba-requirements.yaml
-################# end custom tools section ######
+RUN pip3 -V \
+    && pip3 install --no-cache-dir -U crcmod terra-notebook-utils
 
-RUN R -e 'BiocManager::install(c( \
-    "AnVIL", \
-    "SingleCellExperiment", \ 
-    "GenomicFeatures", \
-    "GenomicAlignments", \ 
-    "ShortRead", \
-    "DESeq2", \
-    "AnnotationHub", \
-    "ExperimentHub", \
-    "ensembldb", \
-    "scRNAseq", \
-    "scran", \
-    "Rtsne"))'
+# add rstudio user to users group
+RUN usermod -g users rstudio \
+    && useradd -m -s /bin/bash -N -u 1001 welder-user
 
-USER jupyter
+# google-cloud R packages
+RUN R -e "BiocManager::install(c('AnVIL', 'DataBiosphere/Ronaldo', 'shiny', 'bigrquery', 'googleCloudStorageR', 'tidyverse',  'markdown'))"
+
+ENV RSTUDIO_PORT 8001
+ENV RSTUDIO_HOME /etc/rstudio
+ENV RSTUDIO_USERSETTING /home/rstudio/.config/rstudio/rstudio-prefs.json
+
+ADD rserver.conf $RSTUDIO_HOME/rserver.conf
+
+RUN sed -i 's/"always_save_history": false/"always_save_history": true/g'  $RSTUDIO_USERSETTING \
+ && sed -i 's/"save_workspace": "never"/"save_workspace": "always"/g' $RSTUDIO_USERSETTING
+
+EXPOSE $RSTUDIO_PORT
+
+COPY scripts ${RSTUDIO_HOME}/scripts
+
+RUN find ${RSTUDIO_HOME}/scripts -name '*.sh' -type f | xargs chmod +x \
+ && echo "PIP_USER=true" >>  /usr/local/lib/R/etc/Renviron.site
+
+RUN apt-get clean && rm -rf /var/lib/apt/lists/*
+
+
+FROM ghcr.io/bioconductor/ml-verse:3.17 as final
+COPY --from=build / /
+
+ENV RSTUDIO_PORT 8001
+ENV RSTUDIO_HOME /etc/rstudio
+ENV RSTUDIO_USERSETTING /home/rstudio/.config/rstudio/rstudio-prefs.json
